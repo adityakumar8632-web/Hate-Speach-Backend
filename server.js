@@ -75,12 +75,27 @@ app.post("/moderate", async (req, res) => {
       input: trimmed,
     });
 
+    // OpenAI Node SDK v4 — response shape:
+    //   moderation.results  → array of Moderation objects (NOT moderation.data)
+    //   result.flagged      → boolean
+    //   result.category_scores → typed SDK object, must be serialized to plain JSON
+    if (!moderation.results || moderation.results.length === 0) {
+      console.error("OpenAI returned empty results array:", moderation);
+      return res.status(502).json({
+        error: "Upstream Error",
+        message: "OpenAI returned an empty moderation result. Please try again.",
+      });
+    }
+
     const result = moderation.results[0];
 
+    // Convert the SDK's typed category_scores object → plain JSON-serializable object.
+    // Without this, dot-notation properties on the SDK class may not serialize correctly.
+    const scores = JSON.parse(JSON.stringify(result.category_scores));
+
     return res.status(200).json({
-      flagged:    result.flagged,
-      categories: result.categories,
-      scores:     result.category_scores,
+      flagged: result.flagged,          // boolean — OpenAI's overall verdict
+      scores,                           // flat object of 0.0–1.0 floats per category
     });
 
   } catch (err) {
