@@ -8,7 +8,7 @@ dotenv.config();
 
 const PORT         = process.env.PORT || 3000;
 const OPENAI_KEY   = process.env.OPENAI_API_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*"; // e.g. https://yourname.github.io
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "https://adityakumar8632-web.github.io"; // e.g. https://yourname.github.io
 
 if (!OPENAI_KEY) {
   console.error("❌  OPENAI_API_KEY is not set. Add it to your .env file or Render environment.");
@@ -87,15 +87,16 @@ app.post("/moderate", async (req, res) => {
       });
     }
 
-    const result = moderation.results[0];
+    const result = moderation.results?.[0] || moderation.data?.[0];
 
     // Convert the SDK's typed category_scores object → plain JSON-serializable object.
     // Without this, dot-notation properties on the SDK class may not serialize correctly.
     const scores = JSON.parse(JSON.stringify(result.category_scores));
 
     return res.status(200).json({
-      flagged: result.flagged,          // boolean — OpenAI's overall verdict
-      scores,                           // flat object of 0.0–1.0 floats per category
+      flagged: result.flagged,
+      scores: result.category_scores,
+      categories: result.categories
     });
 
   } catch (err) {
