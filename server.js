@@ -6,9 +6,17 @@ import OpenAI from "openai";
 // ─── Load Environment Variables ───────────────────────────────────────────────
 dotenv.config();
 
-const PORT         = process.env.PORT || 3000;
-const OPENAI_KEY   = process.env.OPENAI_API_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "https://adityakumar8632-web.github.io"; // e.g. https://yourname.github.io
+const PORT        = process.env.PORT || 3000;
+const OPENAI_KEY  = process.env.OPENAI_API_KEY;
+
+const RAW_ORIGIN  = process.env.ALLOWED_ORIGIN || "https://adityakumar8632-web.github.io";
+const ALLOWED_ORIGINS = [
+  RAW_ORIGIN,
+  "https://adityakumar8632-web.github.io/Hate-Speach-Frontend",
+  "http://localhost:5500",
+  "http://127.0.0.1:5500",
+  "http://localhost:3000",
+];
 
 if (!OPENAI_KEY) {
   console.error("❌  OPENAI_API_KEY is not set. Add it to your .env file or Render environment.");
@@ -21,30 +29,51 @@ const openai = new OpenAI({ apiKey: OPENAI_KEY });
 // ─── Express App ──────────────────────────────────────────────────────────────
 const app = express();
 
-// CORS — restrict to your GitHub Pages origin in production
-app.use(cors({
-  origin: ALLOWED_ORIGIN,
-  methods: ["POST", "OPTIONS"],
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS policy: Origin ${origin} not allowed.`));
+  },
+  methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"],
-}));
+  optionsSuccessStatus: 200,
+};
 
-// Parse JSON bodies
+app.options("*", cors(corsOptions));
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "20kb" }));
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    service: "ClearText Moderation Proxy",
-    version: "1.0.0",
+// ─── Request Logger ──────────────────────────────────────────────────────────
+// NEW: Logs every successful request so you can see them in Render logs
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const ms     = Date.now() - start;
+    const status = res.statusCode;
+    const icon   = status >= 500 ? "❌" : status >= 400 ? "⚠️" : "✅";
+    console.log(`${icon}  ${req.method} ${req.path} → ${status} (${ms}ms) [${req.get("origin") || "no-origin"}]`);
   });
+  next();
 });
+
+// ─── Root / Health Check ─────────────────────────────────────────────────────
+// NEW: Both GET / and GET /health return the same health payload
+const healthPayload = () => ({
+  status:    "ok",
+  service:   "ClearText Moderation Proxy",
+  version:   "1.0.1",
+  timestamp: new Date().toISOString(),
+  uptime:    `${Math.floor(process.uptime())}s`,
+});
+
+app.get("/",       (req, res) => res.json(healthPayload()));
+app.get("/health", (req, res) => res.json(healthPayload()));
 
 // ─── POST /moderate ───────────────────────────────────────────────────────────
 app.post("/moderate", async (req, res) => {
   const { text } = req.body;
 
-  // ── Input validation ──
   if (!text || typeof text !== "string") {
     return res.status(400).json({
       error: "Bad Request",
@@ -68,17 +97,12 @@ app.post("/moderate", async (req, res) => {
     });
   }
 
-  // ── Call OpenAI Moderation API ──
   try {
     const moderation = await openai.moderations.create({
       model: "omni-moderation-latest",
       input: trimmed,
     });
 
-    // OpenAI Node SDK v4 — response shape:
-    //   moderation.results  → array of Moderation objects (NOT moderation.data)
-    //   result.flagged      → boolean
-    //   result.category_scores → typed SDK object, must be serialized to plain JSON
     if (!moderation.results || moderation.results.length === 0) {
       console.error("OpenAI returned empty results array:", moderation);
       return res.status(502).json({
@@ -87,20 +111,17 @@ app.post("/moderate", async (req, res) => {
       });
     }
 
-    const result = moderation.results?.[0] || moderation.data?.[0];
-
-    // Convert the SDK's typed category_scores object → plain JSON-serializable object.
-    // Without this, dot-notation properties on the SDK class may not serialize correctly.
-    const scores = JSON.parse(JSON.stringify(result.category_scores));
+    const result     = moderation.results[0];
+    const scores     = JSON.parse(JSON.stringify(result.category_scores));
+    const categories = JSON.parse(JSON.stringify(result.categories));
 
     return res.status(200).json({
-      flagged: result.flagged,
-      scores: result.category_scores,
-      categories: result.categories
+      flagged:    result.flagged,
+      scores:     scores,
+      categories: categories,
     });
 
   } catch (err) {
-    // OpenAI API error
     if (err?.status) {
       console.error(`OpenAI API error [${err.status}]:`, err.message);
       return res.status(502).json({
@@ -109,7 +130,6 @@ app.post("/moderate", async (req, res) => {
       });
     }
 
-    // Network / timeout error
     if (err.code === "ECONNRESET" || err.code === "ETIMEDOUT") {
       console.error("Network error reaching OpenAI:", err.code);
       return res.status(504).json({
@@ -118,7 +138,13 @@ app.post("/moderate", async (req, res) => {
       });
     }
 
-    // Unexpected error
+    if (err.message && err.message.startsWith("CORS policy:")) {
+      return res.status(403).json({
+        error: "Forbidden",
+        message: err.message,
+      });
+    }
+
     console.error("Unexpected error in /moderate:", err);
     return res.status(500).json({
       error: "Internal Server Error",
@@ -129,11 +155,15 @@ app.post("/moderate", async (req, res) => {
 
 // ─── 404 Fallback ─────────────────────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({ error: "Not Found", message: `Route ${req.method} ${req.path} does not exist.` });
+  res.status(404).json({
+    error: "Not Found",
+    message: `Route ${req.method} ${req.path} does not exist.`,
+  });
 });
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`✅  ClearText proxy running on port ${PORT}`);
-  console.log(`🌐  CORS origin: ${ALLOWED_ORIGIN}`);
+  console.log(`🌐  Allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+  console.log(`🩺  Health check: GET /health`);
 });
