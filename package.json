@@ -1,7 +1,7 @@
 {
   "name": "cleartext-backend",
-  "version": "1.0.0",
-  "description": "Secure backend proxy for ClearText hate speech detection — forwards requests to OpenAI Moderation API",
+  "version": "2.0.0",
+  "description": "Secure backend proxy for ClearText hate speech detection — uses HuggingFace Inference API (free, no billing needed)",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -14,13 +14,12 @@
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
-    "express": "^4.18.2",
-    "openai": "^4.0.0"
+    "express": "^4.18.2"
   },
   "keywords": [
     "hate-speech",
     "content-moderation",
-    "openai",
+    "huggingface",
     "proxy",
     "cleartext"
   ],
