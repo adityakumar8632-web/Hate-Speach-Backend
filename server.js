@@ -1,20 +1,20 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import fetch from "node-fetch";
 
 dotenv.config();
 
 const PORT     = process.env.PORT || 3000;
 const HF_TOKEN = process.env.HF_API_TOKEN;
 
+// ─── CORRECT HuggingFace URL (updated June 2025) ──────────────────────────────
+const HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/Falconsai/offensive_speech_detection";
+
 const app = express();
 
 // ─── CORS — Allow ALL origins ─────────────────────────────────────────────────
-// This is a public read-only moderation API with no user data, so open CORS is fine.
 app.use(cors());
 app.options("*", cors());
-
 app.use(express.json({ limit: "20kb" }));
 
 // ─── Request Logger ───────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const ms   = Date.now() - start;
     const icon = res.statusCode >= 500 ? "❌" : res.statusCode >= 400 ? "⚠️" : "✅";
-    console.log(`${icon} ${req.method} ${req.path} → ${res.statusCode} (${ms}ms) [${req.get("origin") || "direct"}]`);
+    console.log(`${icon} ${req.method} ${req.path} → ${res.statusCode} (${ms}ms)`);
   });
   next();
 });
@@ -35,13 +35,11 @@ app.get("/health", (req, res) => res.json({ status: "ok", service: "ClearText", 
 // ─── POST /moderate ───────────────────────────────────────────────────────────
 app.post("/moderate", async (req, res) => {
 
-  // Check token
   if (!HF_TOKEN) {
     console.error("❌ HF_API_TOKEN not set.");
-    return res.status(500).json({ error: "Server Misconfigured", message: "API token not configured. Contact the site owner." });
+    return res.status(500).json({ error: "Server Misconfigured", message: "API token not configured." });
   }
 
-  // Validate input
   const { text } = req.body;
   if (!text || typeof text !== "string" || text.trim().length === 0) {
     return res.status(400).json({ error: "Bad Request", message: "Please provide a non-empty 'text' field." });
@@ -51,48 +49,48 @@ app.post("/moderate", async (req, res) => {
     return res.status(400).json({ error: "Bad Request", message: "'text' must not exceed 5,000 characters." });
   }
 
-  // Call HuggingFace
   try {
-    const hfRes = await fetch(
-      "https://router.huggingface.co/hf-inference/models/GroNLP/hateBERT",
-      {
-        method:  "POST",
-        headers: {
-          "Authorization": `Bearer ${HF_TOKEN}`,
-          "Content-Type":  "application/json",
-        },
-        body: JSON.stringify({ inputs: trimmed }),
-      }
-    );
+    const hfRes = await fetch(HF_MODEL_URL, {
+      method:  "POST",
+      headers: {
+        "Authorization": `Bearer ${HF_TOKEN}`,
+        "Content-Type":  "application/json",
+      },
+      body: JSON.stringify({ inputs: trimmed }),
+    });
 
-    // 503 = model is cold-starting on HuggingFace
+    // Log raw status for debugging
+    console.log(`🤖 HuggingFace response status: ${hfRes.status}`);
+
     if (hfRes.status === 503) {
       const body     = await hfRes.json().catch(() => ({}));
       const waitTime = Math.ceil(body?.estimated_time ?? 20);
-      console.warn(`⏳ HuggingFace model loading (~${waitTime}s)`);
+      console.warn(`⏳ Model loading (~${waitTime}s)`);
       return res.status(503).json({
-        error:          "Model Loading",
-        message:        `The AI model is warming up. Please try again in ${waitTime} seconds.`,
+        error: "Model Loading",
+        message: `The AI model is warming up. Please try again in ${waitTime} seconds.`,
         estimated_time: waitTime,
       });
     }
 
     if (!hfRes.ok) {
       const errText = await hfRes.text().catch(() => "");
-      console.error(`HuggingFace error [${hfRes.status}]:`, errText);
+      console.error(`❌ HuggingFace error [${hfRes.status}]:`, errText);
       return res.status(502).json({ error: "Upstream Error", message: "AI service returned an error. Please try again." });
     }
 
     const raw    = await hfRes.json();
-    const labels = raw?.[0];
+    console.log("🤖 HuggingFace raw response:", JSON.stringify(raw));
 
-    if (!Array.isArray(labels)) {
-      console.error("Unexpected HuggingFace shape:", raw);
+    const labels = Array.isArray(raw?.[0]) ? raw[0] : Array.isArray(raw) ? raw : null;
+
+    if (!labels) {
+      console.error("Unexpected shape:", raw);
       return res.status(502).json({ error: "Upstream Error", message: "Unexpected AI response. Please try again." });
     }
 
-    const offensiveScore = labels.find(s => s.label.toLowerCase() === "offensive")?.score    ?? 0;
-    const safeScore      = labels.find(s => s.label.toLowerCase() === "non-offensive")?.score ?? 0;
+    const offensiveScore = labels.find(s => s.label.toLowerCase().includes("offensive") && !s.label.toLowerCase().includes("non"))?.score ?? 0;
+    const safeScore      = labels.find(s => s.label.toLowerCase().includes("non"))?.score ?? (1 - offensiveScore);
     const flagged        = offensiveScore > 0.5;
     const b              = offensiveScore;
 
@@ -121,7 +119,7 @@ app.post("/moderate", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Unexpected error in /moderate:", err);
+    console.error("Unexpected error:", err);
     return res.status(500).json({ error: "Internal Server Error", message: "Something went wrong. Please try again." });
   }
 });
@@ -132,11 +130,6 @@ app.use((req, res) => res.status(404).json({ error: "Not Found", message: `${req
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ ClearText running on port ${PORT}`);
-  console.log(`🤖 Engine: HuggingFace Falconsai/offensive_speech_detection`);
-  console.log(`🩺 Health: GET /health`);
+  console.log(`🤖 HF URL: ${HF_MODEL_URL}`);
   console.log(`🔑 HF Token: ${HF_TOKEN ? "SET ✓" : "NOT SET ✗"}`);
 });
-
-
-
-
