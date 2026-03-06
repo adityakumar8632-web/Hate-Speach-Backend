@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import fetch from "node-fetch";
 
 dotenv.config();
 
@@ -135,6 +136,7 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`🩺 Health: GET /health`);
   console.log(`🔑 HF Token: ${HF_TOKEN ? "SET ✓" : "NOT SET ✗"}`);
 });
+
 
 
 
