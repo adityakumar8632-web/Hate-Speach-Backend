@@ -7,8 +7,10 @@ dotenv.config();
 const PORT     = process.env.PORT || 3000;
 const HF_TOKEN = process.env.HF_API_TOKEN;
 
-// ─── CORRECT HuggingFace URL (updated June 2025) ──────────────────────────────
-const HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/Falconsai/offensive_speech_detection";
+// ─── Model: bert-base-uncased-hatexplain ──────────────────────────────────────
+// Returns labels: "hatespeech", "offensive", "normal"
+// More reliable on HuggingFace free tier than Falconsai
+const HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/Hate-speech-CNERG/bert-base-uncased-hatexplain";
 
 const app = express();
 
@@ -59,9 +61,9 @@ app.post("/moderate", async (req, res) => {
       body: JSON.stringify({ inputs: trimmed }),
     });
 
-    // Log raw status for debugging
-    console.log(`🤖 HuggingFace response status: ${hfRes.status}`);
+    console.log(`🤖 HuggingFace status: ${hfRes.status}`);
 
+    // 503 = model cold-starting
     if (hfRes.status === 503) {
       const body     = await hfRes.json().catch(() => ({}));
       const waitTime = Math.ceil(body?.estimated_time ?? 20);
@@ -79,9 +81,10 @@ app.post("/moderate", async (req, res) => {
       return res.status(502).json({ error: "Upstream Error", message: "AI service returned an error. Please try again." });
     }
 
-    const raw    = await hfRes.json();
-    console.log("🤖 HuggingFace raw response:", JSON.stringify(raw));
+    const raw = await hfRes.json();
+    console.log("🤖 Raw response:", JSON.stringify(raw));
 
+    // Response shape: [ [ { label: "hatespeech", score: 0.9 }, { label: "offensive", score: 0.07 }, { label: "normal", score: 0.03 } ] ]
     const labels = Array.isArray(raw?.[0]) ? raw[0] : Array.isArray(raw) ? raw : null;
 
     if (!labels) {
@@ -89,16 +92,24 @@ app.post("/moderate", async (req, res) => {
       return res.status(502).json({ error: "Upstream Error", message: "Unexpected AI response. Please try again." });
     }
 
-    const offensiveScore = labels.find(s => s.label.toLowerCase().includes("offensive") && !s.label.toLowerCase().includes("non"))?.score ?? 0;
-    const safeScore      = labels.find(s => s.label.toLowerCase().includes("non"))?.score ?? (1 - offensiveScore);
-    const flagged        = offensiveScore > 0.5;
-    const b              = offensiveScore;
+    // Extract scores by label name
+    const hateScore      = labels.find(s => s.label.toLowerCase().includes("hate"))?.score      ?? 0;
+    const offenseScore   = labels.find(s => s.label.toLowerCase().includes("offensive"))?.score  ?? 0;
+    const normalScore    = labels.find(s => s.label.toLowerCase().includes("normal"))?.score     ?? 0;
 
+    // Overall harm score = max of hate + offensive
+    const harmScore = Math.max(hateScore, offenseScore);
+    const flagged   = harmScore > 0.5;
+    const b         = harmScore;
+
+    console.log(`📊 hate: ${(hateScore*100).toFixed(1)}% | offensive: ${(offenseScore*100).toFixed(1)}% | normal: ${(normalScore*100).toFixed(1)}% | flagged: ${flagged}`);
+
+    // Map to frontend category scores
     const scores = {
-      "hate":                    +(Math.min(1, b * 1.00)).toFixed(4),
-      "hate/threatening":        +(Math.min(1, b * 0.60)).toFixed(4),
-      "harassment":              +(Math.min(1, b * 0.90)).toFixed(4),
-      "harassment/threatening":  +(Math.min(1, b * 0.50)).toFixed(4),
+      "hate":                    +(Math.min(1, hateScore * 1.00)).toFixed(4),
+      "hate/threatening":        +(Math.min(1, hateScore * 0.70)).toFixed(4),
+      "harassment":              +(Math.min(1, offenseScore * 1.00)).toFixed(4),
+      "harassment/threatening":  +(Math.min(1, offenseScore * 0.60)).toFixed(4),
       "self-harm":               +(Math.min(1, b * 0.20)).toFixed(4),
       "self-harm/intent":        +(Math.min(1, b * 0.15)).toFixed(4),
       "self-harm/instructions":  +(Math.min(1, b * 0.10)).toFixed(4),
@@ -109,8 +120,6 @@ app.post("/moderate", async (req, res) => {
       "illicit":                 +(Math.min(1, b * 0.50)).toFixed(4),
       "illicit/violent":         +(Math.min(1, b * 0.30)).toFixed(4),
     };
-
-    console.log(`📊 offensive: ${(offensiveScore * 100).toFixed(1)}% | safe: ${(safeScore * 100).toFixed(1)}% | flagged: ${flagged}`);
 
     return res.status(200).json({
       flagged,
@@ -130,6 +139,6 @@ app.use((req, res) => res.status(404).json({ error: "Not Found", message: `${req
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ ClearText running on port ${PORT}`);
-  console.log(`🤖 HF URL: ${HF_MODEL_URL}`);
+  console.log(`🤖 Model: Hate-speech-CNERG/bert-base-uncased-hatexplain`);
   console.log(`🔑 HF Token: ${HF_TOKEN ? "SET ✓" : "NOT SET ✗"}`);
 });
