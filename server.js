@@ -53,7 +53,7 @@ app.post("/moderate", async (req, res) => {
   // Call HuggingFace
   try {
     const hfRes = await fetch(
-      "https://router.huggingface.co/hf-inference/models/Falconsai/offensive_speech_detection/text-classification",
+      "https://router.huggingface.co/hf-inference/models/GroNLP/hateBERT",
       {
         method:  "POST",
         headers: {
@@ -135,5 +135,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`🩺 Health: GET /health`);
   console.log(`🔑 HF Token: ${HF_TOKEN ? "SET ✓" : "NOT SET ✗"}`);
 });
+
 
 
