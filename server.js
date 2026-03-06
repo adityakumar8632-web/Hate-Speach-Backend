@@ -4,32 +4,16 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-// ─── Environment ──────────────────────────────────────────────────────────────
 const PORT     = process.env.PORT || 3000;
 const HF_TOKEN = process.env.HF_API_TOKEN;
 
-// ─── CORS ─────────────────────────────────────────────────────────────────────
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.startsWith("https://adityakumar8632-web.github.io")) return callback(null, true);
-    if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) return callback(null, true);
-    console.warn(`🚫 CORS blocked: ${origin}`);
-    return callback(new Error("CORS_BLOCKED"));
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
-  optionsSuccessStatus: 200,
-};
-
-// ─── HuggingFace ──────────────────────────────────────────────────────────────
-const HF_MODEL_URL = "https://api-inference.huggingface.co/models/Falconsai/offensive_speech_detection";
-
-// ─── App ──────────────────────────────────────────────────────────────────────
 const app = express();
 
-app.options("*", cors(corsOptions));
-app.use(cors(corsOptions));
+// ─── CORS — Allow ALL origins ─────────────────────────────────────────────────
+// This is a public read-only moderation API with no user data, so open CORS is fine.
+app.use(cors());
+app.options("*", cors());
+
 app.use(express.json({ limit: "20kb" }));
 
 // ─── Request Logger ───────────────────────────────────────────────────────────
@@ -38,7 +22,7 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const ms   = Date.now() - start;
     const icon = res.statusCode >= 500 ? "❌" : res.statusCode >= 400 ? "⚠️" : "✅";
-    console.log(`${icon} ${req.method} ${req.path} → ${res.statusCode} (${ms}ms)`);
+    console.log(`${icon} ${req.method} ${req.path} → ${res.statusCode} (${ms}ms) [${req.get("origin") || "direct"}]`);
   });
   next();
 });
@@ -50,13 +34,10 @@ app.get("/health", (req, res) => res.json({ status: "ok", service: "ClearText", 
 // ─── POST /moderate ───────────────────────────────────────────────────────────
 app.post("/moderate", async (req, res) => {
 
-  // Check token is configured
+  // Check token
   if (!HF_TOKEN) {
-    console.error("❌ HF_API_TOKEN not set in environment variables.");
-    return res.status(500).json({
-      error:   "Server Misconfigured",
-      message: "API token not configured on the server. Please contact the site owner.",
-    });
+    console.error("❌ HF_API_TOKEN not set.");
+    return res.status(500).json({ error: "Server Misconfigured", message: "API token not configured. Contact the site owner." });
   }
 
   // Validate input
@@ -71,16 +52,19 @@ app.post("/moderate", async (req, res) => {
 
   // Call HuggingFace
   try {
-    const hfRes = await fetch(HF_MODEL_URL, {
-      method:  "POST",
-      headers: {
-        "Authorization": `Bearer ${HF_TOKEN}`,
-        "Content-Type":  "application/json",
-      },
-      body: JSON.stringify({ inputs: trimmed }),
-    });
+    const hfRes = await fetch(
+      "https://api-inference.huggingface.co/models/Falconsai/offensive_speech_detection",
+      {
+        method:  "POST",
+        headers: {
+          "Authorization": `Bearer ${HF_TOKEN}`,
+          "Content-Type":  "application/json",
+        },
+        body: JSON.stringify({ inputs: trimmed }),
+      }
+    );
 
-    // 503 = model cold-starting
+    // 503 = model is cold-starting on HuggingFace
     if (hfRes.status === 503) {
       const body     = await hfRes.json().catch(() => ({}));
       const waitTime = Math.ceil(body?.estimated_time ?? 20);
@@ -145,7 +129,6 @@ app.post("/moderate", async (req, res) => {
 app.use((req, res) => res.status(404).json({ error: "Not Found", message: `${req.method} ${req.path} does not exist.` }));
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-// IMPORTANT: "0.0.0.0" is required for Render to detect the open port
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ ClearText running on port ${PORT}`);
   console.log(`🤖 Engine: HuggingFace Falconsai/offensive_speech_detection`);
